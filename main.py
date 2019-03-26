@@ -1,13 +1,15 @@
 import time
 import os
+import argparse
+import json
+import logging
+import platform
 
 import pandas as pd
 from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
-
-from config import *
 
 ### UTILS ###
 def wait_for(condition_function):
@@ -36,55 +38,86 @@ class wait_for_page_load(object):
   def __exit__(self, *_):
     wait_for(self.page_has_loaded)
 
-### Loading google chrome driver.
-### Might need to set absolute path
+logger = logging.getLogger('Marks_downloader')
+logger.setLevel(logging.DEBUG)
+ch = logging.StreamHandler()
+ch.setLevel(logging.ERROR)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+ch.setFormatter(formatter)
+logger.addHandler(ch)
 
-driver = webdriver.Chrome('chromedriver')
+parser = argparse.ArgumentParser()
+parser.add_argument('--config_path', default='config.json')
+args = parser.parse_args()
 
-driver.get("https://my.spbu.ru/Login.aspx?ReturnUrl=%2f")
+logger.debug('reading config')
+with open(args.config_path, 'r') as f:
+    params = json.load(f)
 
-### Filling login ###
+sleep_time = params['sleep_time']
 
-login_x_path='//*[contains(@id, \'xaf_dviUserName_Edit_I\')]'
-elem = driver.find_element_by_xpath(login_x_path)
-elem.send_keys(LOGIN)
+if platform.system() in ('Darwin', 'Linux'):
+    save_dir = dlPth=os.path.join(os.getenv('HOME'), 'Downloads')
+    driver_path = params['driver_path'] or os.path.join(os.path.abspath(__file__).split('/')[:-1], 'chromedriver')
+else:
+    raise RuntimeError(f'{platform.system()} is not supported')
 
-### Filling password ###
+chrome_options = webdriver.ChromeOptions()
+chrome_options.add_argument(f'download.default_directory={save_dir}')
+with webdriver.Chrome(params['driver_path'], options=chrome_options) as driver:
 
-password_x_path='//*[contains(@id, \'xaf_dviPassword_Edit_I\')]'
-elem = driver.find_element_by_xpath(password_x_path)
-elem.send_keys(PASSWORD)
+    driver.get("https://my.spbu.ru/Login.aspx?ReturnUrl=%2f")
 
-### Loading main page ###
+    logger.debug('Filling login')
 
-with wait_for_page_load(driver):
-    elem.send_keys(Keys.RETURN)
+    login_x_path='//*[contains(@id, \'xaf_dviUserName_Edit_I\')]'
+    elem = driver.find_element_by_xpath(login_x_path)
+    elem.send_keys(params['login'])
 
-elem = driver.find_element_by_xpath('//*[@id="Vertical_NC_NB_GHC0"]/span')
-elem.click()
+    logger.debug('Filling password')
 
-elem = driver.find_element_by_xpath('//*[@id="Vertical_NC_NB_I0i2_"]/span')
-elem.click()
+    password_x_path='//*[contains(@id, \'xaf_dviPassword_Edit_I\')]'
+    elem = driver.find_element_by_xpath(password_x_path)
+    elem.send_keys(params['password'])
 
-### Time to load page with marks ###
-time.sleep(3)
+    logger.debug('Loading main page')
 
-move_to = driver.find_element_by_xpath('//*[@id="Vertical_mainMenu_Menu_DXI1_"]')
-click_on = driver.find_element_by_xpath('//*[@id="Vertical_mainMenu_Menu_DXI1_T"]/span[1]')
-ActionChains(driver).move_to_element(move_to).click(click_on).perform()
+    with wait_for_page_load(driver):
+        elem.send_keys(Keys.RETURN)
 
-### Close Chrome ###
+    logger.debug('Getting marks page')
+    elem = driver.find_element_by_xpath('//*[@id="Vertical_NC_TL_N2"]')
+    elem.click()
 
-driver.close()
+    time.sleep(sleep_time)
 
-### If your internet connection is slow, set larger number ###
+    logger.debug('Switching languages')
+    elem = driver.find_element_by_xpath('//*[@id="Vertical_SAC_Menu_ITCNT0_xaf_a0_Cb_I"]')
+    elem.click()
 
-time.sleep(5)
+    time.sleep(sleep_time)
+    elem = driver.find_element_by_xpath('//*[@id="Vertical_SAC_Menu_ITCNT0_xaf_a0_Cb_DDD_L_LBI1T0"]')
+    elem.click()
+    time.sleep(sleep_time)
 
-### Set path, where Chrome would save .csv ###
+    logger.debug('Downloaing marks')
+    action = ActionChains(driver)
+    move_to = driver.find_element_by_xpath('//*[@id="Vertical_mainMenu_Menu_DXI3_P"]')
+    click_on = driver.find_element_by_xpath('//*[@id="Vertical_mainMenu_Menu_DXI2_"]')
+    action.move_to_element(move_to).perform()
+    time.sleep(sleep_time)
+    action.move_to_element(click_on).perform()
+    click_on.click()
 
-with open('path/to/downloads/Оценка.csv', 'r') as f:
+    time.sleep(sleep_time)
+
+marks_path = os.path.join(save_dir, params['marks_file_name'])
+
+with open(marks_path, 'r') as f:
     dtf = pd.read_csv(f, sep=';')
-    print(dtf)
+    with pd.option_context('display.max_rows', None,
+                           'display.max_columns', None,
+                           'display.max_colwidth', 100):
+        print(dtf)
 
-os.remove('path/to/downloads/Оценка.csv')
+os.remove(marks_path)
